@@ -44,7 +44,7 @@ void SingleNetRouter::planMazeRoute(const CongestionMap& congMap) {
     gr::GrNet tmpNet = grNet;
     MazeRoute mazeRouter(tmpNet);
     mazeRouter.constructGridGraph(congMap);
-    status = mazeRouter.run();
+    status = mazeRouter.runSweep();
 
     // generate guides
     auto getLower = [&](int coor, Dimension dir) {
