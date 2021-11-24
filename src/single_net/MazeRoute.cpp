@@ -48,16 +48,6 @@ db::RouteStatus MazeRoute::runSweep() {
     return status;
 }
 
-void MazeRoute::getAllVertices(int u, std::unordered_set<int> *visit) {
-    (*visit).insert(u);
-    for (auto direction : directions)
-        if (graph.hasEdge(u, direction)) {
-            int v = graph.getEdgeEndPoint(u, direction);
-            if ((*visit).find(v) != (*visit).end()) continue;
-            getAllVertices(v, visit);
-        }
-}
-
 db::RouteStatus MazeRoute::sweepRoute(int startPin) {
     // log() << "iter = " << iter << std::endl;
     // return route(startPin);
@@ -77,17 +67,9 @@ db::RouteStatus MazeRoute::sweepRoute(int startPin) {
         }
     };
 
-    // preprocess each via line and wire line
-    std::unordered_set<int> visit;
-    for (auto vertex : graph.getVertices(startPin))
-        if (visit.find(vertex) == visit.end()) getAllVertices(vertex, &visit);
-    std::vector<int> viaStart, viaEnd, wireStart, wireEnd;
-    for (auto vertex : visit) {
-        if (!graph.hasEdge(vertex, DOWN)) viaStart.push_back(vertex);
-        if (!graph.hasEdge(vertex, UP)) viaEnd.push_back(vertex);
-        if (!graph.hasEdge(vertex, BACKWARD)) wireStart.push_back(vertex);
-        if (!graph.hasEdge(vertex, FORWARD)) wireEnd.push_back(vertex);
-    }
+    int numPointsX = graph.getNumPointsX();
+    int numPointsY = graph.getNumPointsY();
+    int numLayers = database.getLayerNum();
 
     // init from startPin
     for (auto vertex : graph.getVertices(startPin)) vertexCosts[vertex] = 0;
@@ -101,13 +83,170 @@ db::RouteStatus MazeRoute::sweepRoute(int startPin) {
         db::CostT minCost = std::numeric_limits<db::CostT>::max();
 
         for (int round = 0, iterNum = std::max(5, 11 - iter * 2); round < iterNum; round++) {
+            int vertexIdx;
             // via sweep
-            for (auto vertex : viaStart) sweep(vertex, UP);
-            for (auto vertex : viaEnd) sweep(vertex, DOWN);
+            // for (auto vertex : viaStart) sweep(vertex, UP);
+            // for (auto vertex : viaEnd) sweep(vertex, DOWN);
+            for (int x = 0; x < numPointsX; x++)
+                for (int y = 0; y < numPointsY; y++) {
+                    vertexIdx = x * numPointsY + y;
+                    sweep(vertexIdx, UP);
+                    vertexIdx = (numLayers - 1) * numPointsX * numPointsY + vertexIdx;
+                    sweep(vertexIdx, DOWN);
+                }
             // wire sweep
-            for (auto vertex : wireStart) sweep(vertex, FORWARD);
-            for (auto vertex : wireEnd) sweep(vertex, BACKWARD);
+            // for (auto vertex : wireStart) sweep(vertex, FORWARD);
+            // for (auto vertex : wireEnd) sweep(vertex, BACKWARD);
+            for (int layer = 0; layer < numLayers; layer++) {
+                int layerBias = layer * numPointsX * numPointsY;
+                if (database.getLayerDir(layer) == Y) {
+                    for (int y = 0; y < numPointsY; y++) {
+                        vertexIdx = layerBias + y;
+                        sweep(vertexIdx, FORWARD);
+                        vertexIdx = layerBias + (numPointsX - 1) * numPointsY + y;
+                        sweep(vertexIdx, BACKWARD);
+                    }
+                }
+                else {
+                    for (int x = 0; x < numPointsX; x++) {
+                        vertexIdx = layerBias + x * numPointsY;
+                        sweep(vertexIdx, FORWARD);
+                        vertexIdx = layerBias + x * numPointsY + (numPointsY - 1);
+                        sweep(vertexIdx, BACKWARD);
+                    }
+                }
+            }
         }
+
+        for (int pinIdx = startPin; pinIdx < mergedPinAccessBoxes.size(); pinIdx++)
+            if (visitedPin.find(pinIdx) == visitedPin.end()) {
+                for (auto vertex : graph.getVertices(pinIdx))
+                    if (vertexCosts[vertex] < minCost) {
+                        minCost = vertexCosts[vertex];
+                        dstVertex = vertex;
+                        dstPinIdx = pinIdx;
+                    }
+            }
+
+        if (dstVertex < 0) {
+            printWarnMsg(db::RouteStatus::FAIL_DISCONNECTED_GRID_GRAPH, grNet.dbNet);
+            printlog(visitedPin, nPinToConnect, mergedPinAccessBoxes.size(), mergedPinAccessBoxes);
+            printlog(graph.checkConn());
+            graph.writeDebugFile(grNet.getName() + ".graph");
+            getchar();
+            return db::RouteStatus::FAIL_DISCONNECTED_GRID_GRAPH;
+        }
+
+        // update pinSolv
+        pinSolv[dstPinIdx] = dstVertex;
+
+        // mark the path to be zero
+        auto tmp = dstVertex;
+        while (tmp >= 0 && vertexCosts[tmp] != 0) {
+            vertexCosts[tmp] = 0;
+            tmp = vertexPrev[tmp];
+        }
+
+        // mark all the accessbox of the pin to be almost zero
+        for (auto vertex : graph.getVertices(dstPinIdx)) {
+            if (vertex == dstVertex) continue;
+            vertexCosts[vertex] = 0;
+            vertexPrev[vertex] = -1;
+        }
+
+        visitedPin.insert(dstPinIdx);
+        nPinToConnect--;
+    }
+
+    return db::RouteStatus::SUCC_NORMAL;
+}
+
+db::RouteStatus MazeRoute::GPUSweepRoute(int startPin) {
+    int numPointsX = graph.getNumPointsX();
+    int numPointsY = graph.getNumPointsY();
+    int numLayers = database.getLayerNum();
+
+    // init from startPin
+    for (auto vertex : graph.getVertices(startPin)) vertexCosts[vertex] = 0;
+
+    std::unordered_set<int> visitedPin = {startPin};
+    int nPinToConnect = mergedPinAccessBoxes.size() - 1;
+
+    // alloc memory to edge cost array
+    db::CostT *upCost = malloc(sizeof(db::CostT) * numPointsX * numPointsY * numPointsZ);
+    db::CostT *downCost = malloc(sizeof(db::CostT) * numPointsX * numPointsY * numPointsZ);
+    db::CostT *forwardCost = malloc(sizeof(db::CostT) * numPointsX * numPointsY * numPointsZ);
+    db::CostT *backwardCost = malloc(sizeof(db::CostT) * numPointsX * numPointsY * numPointsZ);
+
+    // initialize edge cost array
+    // forwardCost and backwardCost (wire sweep)
+    int forwardIdx = 0, backwardIdx = 0;
+    for (int layer = 0; layer < numLayers; layer++) {
+        int layerBias = layer * numPointsX * numPointsY;
+        if (database.getLayerDir(layer) == X) {
+            for (int x = 0; x < numPointsX; x++) {
+                for (int y = 0; y < numPointsY; y++) {
+                    int vertex = layerBias + x * numPointsY + y;
+                    if (graph.hasEdge(vertex, FORWARD)) forwardCost[forwardIdx++] = graph.getEdgeCost(vertex, FORWARD);
+                    else forwardCost[forwardIdx++] = 1e12;
+                }
+                for (int y = numPointsY - 1; y >= 0; y--) {
+                    int vertex = layerBias + x * numPointsY + y;
+                    if (graph.hasEdge(vertex, BACKWARD)) backwardCost[backwardIdx++] = graph.getEdgeCost(vertex, BACKWARD);
+                    else backwardCost[backwardIdx++] = 1e12;
+                }
+            }
+        }
+        else {
+            for (int y = 0; y < numPointsY; y++) {
+                for (int x = 0; x < numPointsX; x++) {
+                    int vertex = layerBias + x * numPointsY + y;
+                    if (graph.hasEdge(vertex, FORWARD)) forwardCost[forwardIdx++] = graph.getEdgeCost(vertex, FORWARD);
+                    else forwardCost[forwardIdx++] = 1e12;
+                }
+                for (int x = numPointsX - 1; x >= 0; x--) {
+                    int vertex = layerBias + x * numPointsY + y;
+                    if (graph.hasEdge(vertex, BACKWARD)) bakcwardCost[backwardIdx++] = graph.getEdgeCost(vertex, BACKWARD);
+                    else backwardCost[backwardIdx++] = 1e12;
+                }
+            }
+        }
+    }
+
+    // upCost and downCost (via sweep)
+    int upIdx = 0, downIdx = 0;
+    for (int x = 0; x < numPointsX; x++)
+        for (int y = 0; y < numPointsY; y++) {
+            int bias = x * numPointsY + y;
+            for (int layer = 0; layer < numLayers; layer++) {
+                int vertex = layer * numPointsX * numPointsY + bias;
+                if (graph.hasEdge(vertex, UP)) upCost[upIdx++] = graph.getEdgeCost(vertex, UP);
+                else upCost[upIdx++] = 1e12;
+            }
+            for (int layer = numLayers - 1; layer >= 0; layer--) {
+                int vertex = layer * numPointsX * numPointsY + bias;
+                if (graph.hasEdge(vertex, DOWN)) downCost[downIdx++] = graph.getEdgeCost(vertex, DOWN);
+                else downCost[downIdx++] = 1e12;
+            }
+        }
+
+    for (int iter = 0; nPinToConnect != 0; iter++) {
+        int dstVertex = -1;
+        int dstPinIdx = -1;
+        int iterNum = std::max(5, 11 - iter * 2)
+        db::CostT minCost = std::numeric_limits<db::CostT>::max();
+
+        GPUSweep<db::CostT>(
+            numPointsX,
+            numPointsY,
+            numLayers,
+            *vertexCost,
+            *upCost,
+            *downCost,
+            *forwardCost,
+            *backwardCost,
+            database.getLayerDir(0),
+            iterNum);
 
         for (int pinIdx = startPin; pinIdx < mergedPinAccessBoxes.size(); pinIdx++)
             if (visitedPin.find(pinIdx) == visitedPin.end()) {

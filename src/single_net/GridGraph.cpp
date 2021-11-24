@@ -59,6 +59,9 @@ void CoarseGridGraphBuilder::run(const vector<vector<gr::PointOnLayer>> &mergedP
     numPointsY = ceil(grDatabase.getNumGrPoint(Y) / (double)cellHeight);
     int numPoints = numPointsX * numPointsY * database.getLayerNum();
 
+    graph.numPointsX = numPointsX;
+    graph.numPointsY = numPointsY;
+
     // 1. Give each grid point an index
     graph.vertexToPoint.reserve(numPoints);
     for (int l = 0; l < database.getLayerNum(); l++)

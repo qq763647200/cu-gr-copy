@@ -33,11 +33,16 @@ public:
         return (it != vertexToPin.end()) ? it->second : -1;
     }
     vector<int>& getVertices(int pinIdx) { return pinToVertex[pinIdx]; }
+    int getNumPointsX() { return numPointsX; }
+    int getNumPointsY() { return numPointsY; }
 
     void writeDebugFile(const std::string& fn) const;
     bool checkConn() const;
 
 private:
+    int numPointsX;
+    int numPointsY;
+
     int edgeCount;
 
     // vertex properties

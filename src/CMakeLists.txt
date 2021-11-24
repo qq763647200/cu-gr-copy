@@ -16,6 +16,8 @@ set(CMAKE_INCLUDE_CURRENT_DIR ON)
 # Project's name
 project(iccad19gr)
 
+find_package(CUDA)
+
 # Set the output folder where your program will be created
 set(EXECUTABLE_OUTPUT_PATH ${CMAKE_BINARY_DIR})
 set(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR})
@@ -49,7 +51,8 @@ file(GLOB_RECURSE SRC_FILES_RSYN
 
 file(GLOB_RECURSE SRC_FILES_ICCAD19
     ${PATH_ICCAD19}/*.cpp
-    ${PATH_ICCAD19}/*.c)
+    ${PATH_ICCAD19}/*.c
+    ${PATH_ICCAD19}/*.cu)
 
 set(SRC_FILES ${SRC_FILES_RSYN} ${SRC_FILES_ICCAD19})
 
@@ -70,7 +73,7 @@ endif()
 # Targets #
 ###########
 
-add_executable(iccad19gr ${SRC_FILES})
+cuda_add_executable(iccad19gr ${SRC_FILES})
 
 #######################
 # Include Directories #
@@ -80,6 +83,7 @@ include_directories(${PATH_RSYN}/src)
 include_directories(${PATH_RSYN}/src/rsyn/export)
 include_directories(${PATH_RSYN}/include)
 include_directories(${PATH_ICCAD19})
+include_directories(${PATH_ICCAD19}/../thirdparty/cub-1.8.0)
 
 #################
 # Linker Flags  #

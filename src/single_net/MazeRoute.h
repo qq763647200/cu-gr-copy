@@ -40,3 +40,18 @@ private:
     void getResult();
     void getSweepResult();
 };
+
+extern "C"
+template <typename T>
+void gpuSweep(
+    int numPointsX,
+    int numPointsY,
+    int numLayers,
+    T *vertexCost,
+    T *upCost,
+    T *downCost,
+    T *forwardCost,
+    T *backwardCost,
+    int layer0Dir,
+    int iterNum
+);
